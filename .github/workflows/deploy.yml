@@ -1,0 +1,135 @@
+name: 🚀 Build and Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Cómo incrementar la versión (ignorado si se define custom_tag)"
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      custom_tag:
+        description: "Tag personalizado (e.g. v1.2.3). Anula el bump automático si se define."
+        required: false
+        type: string
+      prerelease:
+        description: "Marcar como pre-release?"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  # ==========================================
+  # 🏷️ Calcular versión semver
+  # ==========================================
+  version:
+    name: 🏷️ Calculate version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.semver.outputs.tag }}
+      version: ${{ steps.semver.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calculate semver tag
+        id: semver
+        run: |
+          if [ -n "${{ inputs.custom_tag }}" ]; then
+            TAG="${{ inputs.custom_tag }}"
+            [[ "$TAG" == v* ]] || TAG="v$TAG"
+          else
+            LATEST=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+            [ -z "$LATEST" ] && LATEST="v0.0.0"
+
+            MAJOR=$(echo "$LATEST" | cut -d. -f1 | tr -d 'v')
+            MINOR=$(echo "$LATEST" | cut -d. -f2)
+            PATCH=$(echo "$LATEST" | cut -d. -f3)
+
+            BUMP="${{ inputs.bump }}"
+            [ -z "$BUMP" ] && BUMP="patch"
+
+            case "$BUMP" in
+              major) MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0 ;;
+              minor) MINOR=$((MINOR+1)); PATCH=0 ;;
+              patch) PATCH=$((PATCH+1)) ;;
+            esac
+
+            TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          fi
+
+          if [ "${{ inputs.prerelease }}" = "true" ]; then
+            TAG="${TAG}-pre.$(date +%Y%m%d%H%M%S)"
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "Calculated version: $TAG"
+
+  # ==========================================
+  # 🏗️ Build & Push image + crear git tag
+  # ==========================================
+  build:
+    name: 🏗️ Build & Push image
+    needs: version
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to Zot
+        run: docker login zot.devidence.dev -u "$ZOT_USERNAME" -p "$ZOT_PASSWORD"
+
+      - name: "🏗️ Build image ${{ needs.version.outputs.tag }}"
+        run: |
+          ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+          docker build \
+            --platform linux/${ARCH} \
+            --build-arg DATE_CREATED=$(date -u +'%Y-%m-%dT%H:%M:%SZ') \
+            --build-arg VERSION=${{ needs.version.outputs.version }} \
+            -f Dockerfile \
+            -t zot.devidence.dev/discord-tts-bot:${{ needs.version.outputs.tag }} \
+            .
+
+      - name: "📦 Push ${{ needs.version.outputs.tag }} to Zot"
+        run: docker push zot.devidence.dev/discord-tts-bot:${{ needs.version.outputs.tag }}
+
+      - name: "🏷️ Create and push git tag ${{ needs.version.outputs.tag }}"
+        run: |
+          git config user.email "ci@devidence.dev"
+          git config user.name "homelab-ci"
+          git tag ${{ needs.version.outputs.tag }}
+          git push origin ${{ needs.version.outputs.tag }}
+
+  # ==========================================
+  # 🚀 Deploy to production
+  # ==========================================
+  deploy:
+    name: 🚀 Deploy to production
+    needs: [version, build]
+    runs-on: self-hosted
+    environment: production
+    steps:
+      - name: "🚀 Bump homelab to ${{ needs.version.outputs.tag }}"
+        env:
+          HOMELAB_DEPLOY_TOKEN: ${{ secrets.HOMELAB_DEPLOY_TOKEN }}
+        run: |
+          rm -rf /tmp/homelab-discord-tts-bot-deploy
+          git clone https://x-access-token:${HOMELAB_DEPLOY_TOKEN}@github.com/devidence-dev/homelab.git /tmp/homelab-discord-tts-bot-deploy
+          cd /tmp/homelab-discord-tts-bot-deploy
+          sed -i "s|tag: .*|tag: \"${{ needs.version.outputs.tag }}\"|" \
+            kubernetes/internal-apps/discord-tts-bot/values.yaml
+          git config user.email "ci@devidence.dev"
+          git config user.name "homelab-ci"
+          git add kubernetes/internal-apps/discord-tts-bot/values.yaml
+          git diff --staged --quiet && echo "No changes to commit" || (git commit -m "chore(discord-tts-bot): bump image to ${{ needs.version.outputs.tag }}" && git push)
+          rm -rf /tmp/homelab-discord-tts-bot-deploy
