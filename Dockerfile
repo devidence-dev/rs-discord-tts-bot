@@ -1,5 +1,5 @@
 # Stage 1: Build
-FROM rust:1.80-slim-bookworm AS builder
+FROM rust:1.96.0-slim-trixie AS builder
 
 # Instalar dependencias necesarias para compilar opus2/libopus
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -14,7 +14,11 @@ COPY . .
 RUN cargo build --release
 
 # Stage 2: Runtime
-FROM debian:bookworm-slim
+# distroless/base-nossl: incluye glibc + ca-certificates (rustls no usa OpenSSL,
+# así que no necesitamos la variante con libssl). Sin shell ni gestor de paquetes,
+# por lo que las librerías nativas que el binario enlaza dinámicamente (libopus,
+# libgcc_s para el unwinding de pánico de Rust) se copian del stage de build.
+FROM gcr.io/distroless/base-nossl-debian13
 
 ARG DATE_CREATED
 ARG VERSION
@@ -25,15 +29,10 @@ LABEL org.opencontainers.image.title="Discord TTS Bot (Rust)"
 LABEL org.opencontainers.image.description="A Text-to-Speech bot for Discord. Ported to Rust."
 LABEL org.opencontainers.image.source="https://github.com/devidence-dev/discord-tts-bot"
 
-# En runtime se necesita libopus0 y ca-certificates para peticiones HTTPS externas.
-# Ya no necesitamos ffmpeg, ya que symphonia realiza el decode de MP3 a PCM en Rust de forma nativa.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libopus0 \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /opt/app
 
+COPY --from=builder /usr/lib/x86_64-linux-gnu/libopus.so* /usr/lib/x86_64-linux-gnu/
+COPY --from=builder /usr/lib/x86_64-linux-gnu/libgcc_s.so* /usr/lib/x86_64-linux-gnu/
 COPY --from=builder /build/target/release/tts-bot ./tts-bot
 
 ENV DATA_PATH=/opt/app/data

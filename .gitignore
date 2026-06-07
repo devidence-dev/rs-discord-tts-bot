@@ -1,3 +1,4 @@
 /target
 /data/settings.redb
 plan-*.md
+.env
