@@ -17,7 +17,7 @@ services:
       resources:
         limits:
           cpus: '2'
-          memory: 512M
+          memory: 128M
 
 networks:
   discord-tts-net:
