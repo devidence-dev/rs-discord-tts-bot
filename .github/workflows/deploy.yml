@@ -126,7 +126,10 @@ jobs:
           rm -rf /tmp/homelab-discord-tts-bot-deploy
           git clone https://x-access-token:${HOMELAB_DEPLOY_TOKEN}@github.com/devidence-dev/homelab.git /tmp/homelab-discord-tts-bot-deploy
           cd /tmp/homelab-discord-tts-bot-deploy
-          sed -i "s|tag: .*|tag: \"${{ needs.version.outputs.tag }}\"|" \
+          # Anchored to the repository line so this only bumps the bot's own
+          # image tag — values.yaml also pins a sidecar image tag (dnsmasq)
+          # that a blanket `s|tag: .*|...|` would clobber on every deploy.
+          sed -i "/repository: zot.devidence.dev\/discord-tts-bot/{n;s|tag: .*|tag: \"${{ needs.version.outputs.tag }}\"|}" \
             kubernetes/internal-apps/discord-tts-bot/values.yaml
           git config user.email "ci@devidence.dev"
           git config user.name "homelab-ci"
