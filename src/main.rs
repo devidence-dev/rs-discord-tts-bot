@@ -228,6 +228,16 @@ async fn main() {
     // Inicializar tracing
     tracing_subscriber::fmt::init();
 
+    // K8s-only: the cluster's pod network is IPv4-only (no IPv6 routes), but the
+    // system resolver still returns AAAA records for Discord's voice gateway, so
+    // songbird's WS connect picks an unreachable IPv6 address and fails with
+    // "Network is unreachable" (ENETUNREACH). Disabling IPv6 on the pod's own
+    // interfaces makes getaddrinfo (AI_ADDRCONFIG) skip AAAA entirely. Requires
+    // CAP_NET_ADMIN, granted via the pod's securityContext in the Helm values —
+    // writes are silently ignored elsewhere (e.g. local runs without the capability).
+    let _ = std::fs::write("/proc/sys/net/ipv6/conf/all/disable_ipv6", b"1");
+    let _ = std::fs::write("/proc/sys/net/ipv6/conf/default/disable_ipv6", b"1");
+
     // Cargar variables de entorno
     let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
     let testing_guild_id = env::var("TESTING_GUILD_ID").ok();
